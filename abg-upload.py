@@ -44,10 +44,14 @@ st.header('Import ABL files into RedCap')
 
 st.write('Instructions:....')
 
+st.subheader('Step 1: upload files')
+
 csv1 = st.file_uploader('ABL csv1', type='csv')
 csv2 = st.file_uploader('ABL csv2', type='csv')
 
+
+st.subheader('Step 2: Correct errors')
 if csv1 is not None:
-     df1 = pd.read_csv(csv1, encoding='ANSI')
+     df1 = pd.read_csv(csv1, encoding='cp1252')
      df1 = feinerize(df1)
      edited_df = st.data_editor(df1, num_rows='dynamic')
