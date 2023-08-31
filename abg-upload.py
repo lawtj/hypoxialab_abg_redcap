@@ -44,7 +44,7 @@ st.header('Import ABL files into RedCap')
 
 st.write('Instructions:....')
 
-csv1 = st.file_uploader('ABL csv1', type='csv')
+csv1 = st.file_uploader('ABL csv1', type='csv', ecoding='utf8')
 csv2 = st.file_uploader('ABL csv2', type='csv')
 
 if csv1 is not None:
