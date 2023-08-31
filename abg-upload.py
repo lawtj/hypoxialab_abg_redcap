@@ -48,7 +48,7 @@ csv1 = st.file_uploader('ABL csv1', type='csv')
 csv2 = st.file_uploader('ABL csv2', type='csv')
 
 if csv1 is not None:
-    df1 = pd.read_csv(csv1, encoding='ANSI')
-    df1 = feinerize(df1)
+     df1 = pd.read_csv(csv1)
+     df1 = feinerize(df1)
 
 edited_df = st.data_editor(df1, num_rows='dynamic')
