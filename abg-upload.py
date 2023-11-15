@@ -68,7 +68,7 @@ if st.session_state['uploaded']==True:
     if st.button('Combine CSVs'):
         dfs = []
         for num, file in enumerate(uploaded_files):
-            df = pd.read_csv(file, encoding = 'cp1252')
+            df = pd.read_csv(file, encoding = 'cp1252', converters={'Patient ID': str})
             dfs.append(df)
         df1 = pd.concat(dfs, ignore_index=True)
         df1 = feinerize(df1)
@@ -78,7 +78,7 @@ if st.session_state['uploaded']==True:
 ##############################################
 if 'combined' in st.session_state:
     st.subheader('Step 2: Correct errors')
-    edited_df = st.data_editor(st.session_state['df1'], num_rows='dynamic', key='data_editor')
+    edited_df = st.data_editor(st.session_state['df1'].sort_values(by='Time Stamp'), num_rows='dynamic', key='data_editor')
     #count the number of null values in Subject, sample, patient id, and UPI columns
     df1= edited_df
     st.session_state['errors'] = False
@@ -94,6 +94,9 @@ if 'combined' in st.session_state:
     if edited_df['UPI'].isnull().sum() >0:
         st.write('UPI column has null values')
         st.session_state['errors'] = True
+    if sum(edited_df['Patient ID'] == "0000") >0:
+        st.write('The row with Patient ID 0000 will be dropped') # not sure if we even need any message here...
+        edited_df = edited_df[edited_df["Patient ID"] != "0000"]
 ##############################################
 if 'errors' not in st.session_state:
     st.write('')
@@ -120,4 +123,4 @@ if 'finaldf' in st.session_state:
     with one:
         st.button('Upload to RedCap')
     with two:
-        st.button('Download CSV')
+        st.download_button('Download CSV', data=st.session_state['finaldf'].to_csv(index=False), file_name='ABL_upload.csv', mime='text/csv')
