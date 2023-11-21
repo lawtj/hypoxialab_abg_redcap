@@ -2,12 +2,22 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+from redcap import Project
+
+def load_project(key):
+    api_key = st.secrets[key]
+    api_url = 'https://redcap.ucsf.edu/api/'
+    project = Project(api_url, api_key)
+    return project
+
+project = load_project('REDCAP_ABG')
+
 
 #fcols = feiner columns that he uses for processing
 fcols = ['Time Stamp', 'Date Calc', 'Time Calc', 'Subject', 'Sample', 'Patient ID', 'UPI', 'pH','pCO2', 'pO2', 'sO2','COHb','MetHb','tHb']
 
 #rcols = redcap columns including Session when it is created
-rcols = ['Time Stamp', 'Date Calc', 'Time Calc', 'Subject', 'Sample', 'Patient ID', 'UPI', 'Session', 'pH','pCO2', 'pO2', 'sO2','COHb','MetHb','tHb']
+rcols = ['Subject', 'Time Stamp', 'Date Calc', 'Time Calc', 'Sample', 'Patient ID', 'UPI', 'Session', 'pH','pCO2', 'pO2', 'sO2','COHb','MetHb','tHb']
 
 # allcols = the rest of the columns we actually want + feiner cols
 allcols = fcols + ['K+', 'Na+','Ca++','Cl-','Glucose','Lactate','p50','cBase']
@@ -40,7 +50,7 @@ def feinerize(datafr):
     'Glu (mmol/L)': 'Glucose',
     'Lac (mmol/L)':'Lactate',
     'p50(act) (mmHg)':'p50',
-    'cBase(Ecf) (mmol/L)':'cBase'})
+    'cBase(Ecf) (mmol/L)':'cBase'},)
 
     return datafr[allcols]
 
@@ -49,7 +59,13 @@ def feinerize(datafr):
 
 st.header('Import ABL files into RedCap')
 
-st.write('Instructions:....')
+st.write('This app will allow you to upload ABL files and import them into RedCap. Please follow the steps below.')
+st.markdown('''
+    1. **Upload files**: Drag and drop the raw CSVs from the abls into the spot below.
+    2. **Correct errors**: The app will alert you if there are missing values in the Subject, Sample, Patient ID, or UPI columns. You can correct these errors in the table below.
+    3. **Add session numbers**: The app will alert you if there are missing session numbers. Every UPI should have a session number. You can add session numbers in the table below.
+    4. **Upload to RedCap**: Once you have corrected all errors, you can upload the file to RedCap.
+         ''')
 
 #############################################
 st.subheader('Step 1: upload files')
@@ -83,16 +99,16 @@ if 'combined' in st.session_state:
     df1= edited_df
     st.session_state['errors'] = False
     if edited_df['Subject'].isnull().sum() >0:
-        st.write('Subject column has null values')
+        st.write('Subject column has null values: ', edited_df[edited_df['Subject'].isnull()]['Time Stamp'].tolist())
         st.session_state['errors'] = True
     if edited_df['Sample'].isnull().sum() >0:
-        st.write('Sample column has null values')
+        st.write('Sample column has null values: ', edited_df[edited_df['Sample'].isnull()]['Time Stamp'].tolist())
         st.session_state['errors'] = True
     if edited_df['Patient ID'].isnull().sum() >0:
-        st.write('Patient ID column has null values')
+        st.write('Patient ID column has null values: ', edited_df[edited_df['Patient ID'].isnull()]['Time Stamp'].tolist())
         st.session_state['errors'] = True
     if edited_df['UPI'].isnull().sum() >0:
-        st.write('UPI column has null values')
+        st.write('UPI column has null values: ', edited_df[edited_df['UPI'].isnull()]['Time Stamp'].tolist())
         st.session_state['errors'] = True
     if sum(edited_df['Patient ID'] == "0000") >0:
         st.write('The row with Patient ID 0000 will be dropped') # not sure if we even need any message here...
@@ -111,16 +127,63 @@ elif st.session_state['errors'] == False:
         #check if any of the values in the Session column are null
         if upi_edits['Session'].isnull().sum() >0:
             st.write('please fill in all session values')
+            #write the time stamps of the rows with null values
+            st.write(upi_edits[upi_edits['Session'].isnull()]['Time Stamp'].tolist())
         else:
+            #merge session numbers into the original df 
             st.session_state['upi_df'] = upi_edits.reset_index()
             st.session_state['finaldf'] = edited_df.merge(upi_edits, on='UPI',how='left')
             st.session_state['finaldf'] = st.session_state['finaldf'][allcols_r]
-            st.write(st.session_state['finaldf'])
+            st.session_state['finaldf'].rename_axis('record_id', inplace=True)
+                        
+            #drop subject column. I know this doesn't make a lot of sense given that we added during feinerize
+            #but this column doesn't exist in redcap, so I want to remove it. 
+            # initally i wanted to have a function to be able to download a feiner dataframe, but I think we'll just create a separate script for that
+            st.session_state['finaldf'] = st.session_state['finaldf'].drop(columns=['Subject'])
+            
+            #rename columns to match case in redcap
+            st.session_state['finaldf'] = st.session_state['finaldf'].rename(columns={"record_id": 'record_id', 
+                                                                                      'Subject': 'subject',
+                                                                                      'Time Stamp': 'time_stamp',
+                                                                                      "Date Calc": 'date_calc',
+                                                                                      "Time Calc": 'time_calc',
+                                                                                        'Sample': 'sample',
+                                                                                        'Patient ID': 'subject',
+                                                                                        'UPI': 'patient_id',
+                                                                                        'Session': 'session',
+                                                                                        'pH':'ph',
+                                                                                        'pCO2':'pco2',
+                                                                                        'pO2':'po2',
+                                                                                        'sO2':'so2',
+                                                                                        'COHb':'cohb',
+                                                                                        'MetHb':'methb',
+                                                                                        'tHb':'thb',
+                                                                                        'K+':'k',
+                                                                                        'Na+':'na',
+                                                                                        'Ca++':'ca',
+                                                                                        'Cl-':'cl',
+                                                                                        'Glucose':'glucose',
+                                                                                        'Lactate':'lactate',
+                                                                                        'p50':'p50',
+                                                                                        'cBase':'cbase'})
+            #re order columns
+            st.session_state['finaldf'] = st.session_state['finaldf'][['subject', 'time_stamp', 'date_calc', 'time_calc', 'sample', 'patient_id', 'session', 'ph', 'pco2', 'po2', 'so2', 'cohb', 'methb', 'thb', 'k', 'na', 'ca', 'cl', 'glucose', 'lactate', 'p50', 'cbase']]
 
 if 'finaldf' in st.session_state:
     st.subheader('Step 3: Upload & Download')
+    st.write(st.session_state['finaldf'])
     one, two = st.columns(2)
     with one:
-        st.button('Upload to RedCap')
-    with two:
+        # the estimated upload time is .1 seconds per row
+        # display in minutes and seconds
+        st.write('Estimated upload time: ', round(len(st.session_state['finaldf'])*.1/60, 2), ' minutes')
+        if st.button('Upload to RedCap'):
+            with st.spinner('Uploading to RedCap...'):
+                r = project.import_records(st.session_state['finaldf'], 
+                                    import_format='df', 
+                                    overwrite='normal', 
+                                    force_auto_number= True)
+            st.write('Successfully uploaded ', r, ' rows')
         st.download_button('Download CSV', data=st.session_state['finaldf'].to_csv(index=False), file_name='ABL_upload.csv', mime='text/csv')
+    with two:
+        st.write("")
