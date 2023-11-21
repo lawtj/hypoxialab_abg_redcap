@@ -118,11 +118,13 @@ if 'errors' not in st.session_state:
     st.write('')
 elif st.session_state['errors'] == False:
     st.subheader('Step 3: Add session numbers')
-    # get list of all UPIs and put into a new df
-    upis = st.session_state['df1']['UPI'].value_counts().index
-    upi_df = pd.DataFrame(upis, columns=['UPI'])
+    upi_df = st.session_state['df1'].groupby(by=['Date Calc','UPI']).first().reset_index()
+    
+    #get list of UPI and Dates
+    upi_df = upi_df[['Date Calc','UPI']]
     upi_df['Session'] = np.nan
     upi_edits = st.data_editor(upi_df, num_rows='dynamic', key='upi_editor')
+
     if st.button('Add Session Numbers to file'):
         #check if any of the values in the Session column are null
         if upi_edits['Session'].isnull().sum() >0:
@@ -132,7 +134,7 @@ elif st.session_state['errors'] == False:
         else:
             #merge session numbers into the original df 
             st.session_state['upi_df'] = upi_edits.reset_index()
-            st.session_state['finaldf'] = edited_df.merge(upi_edits, on='UPI',how='left')
+            st.session_state['finaldf'] = edited_df.merge(upi_edits, on=['Date Calc','UPI'],how='left')
             st.session_state['finaldf'] = st.session_state['finaldf'][allcols_r]
             st.session_state['finaldf'].rename_axis('record_id', inplace=True)
                         
