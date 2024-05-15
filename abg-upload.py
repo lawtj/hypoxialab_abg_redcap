@@ -27,13 +27,19 @@ allcols_r = rcols + ['K+', 'Na+','Ca++','Cl-','Glucose','Lactate','p50','cBase']
 
 def feinerize(datafr):
     #separate timestamp into two columns
+    print('feinerizing')
     datafr['Time'] = pd.to_datetime(datafr['Time'])
+    print('time converted')
     datafr['Date Calc'] = datafr['Time'].dt.date
+    print('date calc')
     datafr['Time Calc'] =  datafr['Time'].dt.time
 
     #separate patient ID into two columns
-    datafr[['Subject', 'Sample']] = datafr['Patient ID'].astype(str).str.split(pat='.', expand=True)
-
+    try:
+        datafr[['Subject', 'Sample']] = datafr['Patient ID'].astype(str).str.split(pat='.', expand=True)
+    except Exception as e:
+        st.error('Error splitting Patient ID column into "Subject" and "Sample". Expecting "3.21" or similar. Check the Patient ID column for errors.')
+        st.stop()
     # rename columns 
     datafr = datafr.rename(columns={"Time": 'Time Stamp',
     'pCO2 (mmHg)': 'pCO2',
