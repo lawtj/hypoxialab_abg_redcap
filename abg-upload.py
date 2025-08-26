@@ -127,57 +127,117 @@ elif st.session_state['errors'] == False:
     upi_df = st.session_state['df1'].groupby(by=['Date Calc','UPI']).first().reset_index()
     
     #get list of UPI and Dates
-    upi_df = upi_df[['Date Calc','UPI']]
+    upi_df = upi_df[['Date Calc','UPI', 'Time Stamp']]
     upi_df['Session'] = np.nan
     upi_edits = st.data_editor(upi_df, num_rows='dynamic', key='upi_editor')
 
     if st.button('Add Session Numbers to file'):
-        #check if any of the values in the Session column are null
+        # 0) check if any of the values in the Session column are null
         if upi_edits['Session'].isnull().sum() >0:
             st.write('please fill in all session values')
             #write the time stamps of the rows with null values
             st.write(upi_edits[upi_edits['Session'].isnull()]['Time Stamp'].tolist())
-        else:
-            #merge session numbers into the original df 
-            st.session_state['upi_df'] = upi_edits.reset_index()
-            st.session_state['finaldf'] = edited_df.merge(upi_edits, on=['Date Calc','UPI'],how='left')
-            st.session_state['finaldf'] = st.session_state['finaldf'][allcols_r]
-            st.session_state['finaldf'].rename_axis('record_id', inplace=True)
-                        
-            #drop subject column. I know this doesn't make a lot of sense given that we added during feinerize
-            #but this column doesn't exist in redcap, so I want to remove it. 
-            # initally i wanted to have a function to be able to download a feiner dataframe, but I think we'll just create a separate script for that
-            st.session_state['finaldf'] = st.session_state['finaldf'].drop(columns=['Subject'])
+            st.session_state['errors'] = True
+            st.session_state.pop('finaldf', None)
+            st.stop()
             
-            #rename columns to match case in redcap
-            st.session_state['finaldf'] = st.session_state['finaldf'].rename(columns={"record_id": 'record_id', 
-                                                                                      'Subject': 'subject',
-                                                                                      'Time Stamp': 'time_stamp',
-                                                                                      "Date Calc": 'date_calc',
-                                                                                      "Time Calc": 'time_calc',
-                                                                                        'Sample': 'sample',
-                                                                                        'Patient ID': 'subject',
-                                                                                        'UPI': 'patient_id',
-                                                                                        'Session': 'session',
-                                                                                        'pH':'ph',
-                                                                                        'pCO2':'pco2',
-                                                                                        'pO2':'po2',
-                                                                                        'sO2':'so2',
-                                                                                        'COHb':'cohb',
-                                                                                        'MetHb':'methb',
-                                                                                        'tHb':'thb',
-                                                                                        'K+':'k',
-                                                                                        'Na+':'na',
-                                                                                        'Ca++':'ca',
-                                                                                        'Cl-':'cl',
-                                                                                        'Glucose':'glucose',
-                                                                                        'Lactate':'lactate',
-                                                                                        'p50':'p50',
-                                                                                        'cBase':'cbase'})
-            #re order columns
-            st.session_state['finaldf'] = st.session_state['finaldf'][['subject', 'time_stamp', 'date_calc', 'time_calc', 'sample', 'patient_id', 'session', 'ph', 'pco2', 'po2', 'so2', 'cohb', 'methb', 'thb', 'k', 'na', 'ca', 'cl', 'glucose', 'lactate', 'p50', 'cbase']]
+        # 1) check if Session maps to exactly one UPI
+        ed = upi_edits.copy()
+        ed['_SessionStr'] = ed['Session'].astype('Int64').astype('string').str.strip()
+        ed['_UPIStr']     = ed['UPI'].astype('Int64').astype('string').str.strip()
+        sess_to_upi = (
+            ed.dropna(subset=['_SessionStr','_UPIStr'])
+            .groupby('_SessionStr')['_UPIStr'].nunique()
+        )
+        err_sess = sess_to_upi[sess_to_upi > 1]
+        if not err_sess.empty:
+            st.error("Some Session values map to multiple UPIs: " +
+                    ", ".join([f"session {s} ({n} UPIs)" for s, n in err_sess.items()]))
+            st.session_state['errors'] = True
+            st.session_state.pop('finaldf', None)
+            st.stop()
+                
+        # 2) cross-check against REDCap SESSION (types there are strings)
+        session_proj = load_project('REDCAP_SESSION')
+        df_session = pd.DataFrame(session_proj.export_records())
+        df_session['_record_str']  = df_session['record_id'].astype('string').str.strip()
+        df_session['_patient_str'] = df_session['patient_id'].astype('string').str.strip()
+        check = ed[['Time Stamp', '_SessionStr', '_UPIStr']].merge(
+            df_session[['_record_str', '_patient_str']],
+            left_on='_SessionStr', right_on='_record_str', how='left'
+        )
+        mismatches = check[
+            check['_patient_str'].notna() & (check['_patient_str'] != check['_UPIStr'])
+        ]
+        if not mismatches.empty:
+            st.error("Session ↔ UPI mismatch vs REDCap SESSION:")
+            st.dataframe(
+                mismatches[['Time Stamp', '_SessionStr', '_UPIStr', '_patient_str']]
+                .rename(columns={'_SessionStr':'Session',
+                                '_UPIStr':'UPI (ABG file)',
+                                '_patient_str':'UPI (REDCap SESSION)'})
+            )
+            st.session_state['errors'] = True
+            st.session_state.pop('finaldf', None)
+            st.stop()
+            
+        # 3) check if the Session already exists in REDCap ABG database
+        df_abg = pd.DataFrame(project.export_records())
+        s_abg = df_abg['session'].astype('string').str.strip()             
+        s_ed  = ed['Session'].astype('Int64').astype('string').str.strip()     
+        # list the duplicates (unique IDs)
+        session_already_in_redcap = sorted(set(s_ed.dropna()) & set(s_abg.dropna()))
+        if session_already_in_redcap:
+            st.error(f"These Session IDs already exist in REDCap ABG: {session_already_in_redcap}")
+            st.session_state['errors'] = True
+            st.session_state.pop('finaldf', None)
+            st.stop()
+        
+        # ONLY when all checks pass, build finaldf:
+        st.session_state['errors'] = False
+        #merge session numbers into the original df 
+        st.session_state['upi_df'] = upi_edits.reset_index()
+        # drop 'Time Stamp' from upi_edits
+        st.session_state['upi_df'] = upi_edits.reset_index()
+        upi_edits.drop(columns=['Time Stamp'], inplace=True)
+        st.session_state['finaldf'] = edited_df.merge(upi_edits, on=['Date Calc','UPI'],how='left')
+        st.session_state['finaldf'] = st.session_state['finaldf'][allcols_r]
+        st.session_state['finaldf'].rename_axis('record_id', inplace=True)
+                    
+        #drop subject column. I know this doesn't make a lot of sense given that we added during feinerize
+        #but this column doesn't exist in redcap, so I want to remove it. 
+        # initally i wanted to have a function to be able to download a feiner dataframe, but I think we'll just create a separate script for that
+        st.session_state['finaldf'] = st.session_state['finaldf'].drop(columns=['Subject'])
+        
+        #rename columns to match case in redcap
+        st.session_state['finaldf'] = st.session_state['finaldf'].rename(columns={"record_id": 'record_id', 
+                                                                                #   'Subject': 'subject',
+                                                                                    'Time Stamp': 'time_stamp',
+                                                                                    "Date Calc": 'date_calc',
+                                                                                    "Time Calc": 'time_calc',
+                                                                                    'Sample': 'sample',
+                                                                                    'Patient ID': 'subject',
+                                                                                    'UPI': 'patient_id',
+                                                                                    'Session': 'session',
+                                                                                    'pH':'ph',
+                                                                                    'pCO2':'pco2',
+                                                                                    'pO2':'po2',
+                                                                                    'sO2':'so2',
+                                                                                    'COHb':'cohb',
+                                                                                    'MetHb':'methb',
+                                                                                    'tHb':'thb',
+                                                                                    'K+':'k',
+                                                                                    'Na+':'na',
+                                                                                    'Ca++':'ca',
+                                                                                    'Cl-':'cl',
+                                                                                    'Glucose':'glucose',
+                                                                                    'Lactate':'lactate',
+                                                                                    'p50':'p50',
+                                                                                    'cBase':'cbase'})
+        #re order columns
+        st.session_state['finaldf'] = st.session_state['finaldf'][['subject', 'time_stamp', 'date_calc', 'time_calc', 'sample', 'patient_id', 'session', 'ph', 'pco2', 'po2', 'so2', 'cohb', 'methb', 'thb', 'k', 'na', 'ca', 'cl', 'glucose', 'lactate', 'p50', 'cbase']]
 
-if 'finaldf' in st.session_state:
+if ('finaldf' in st.session_state) and (st.session_state.get('errors') is False): # make sure passing all checks before uploading
     st.subheader('Step 3: Upload & Download')
     st.write(st.session_state['finaldf'])
     one, two = st.columns(2)
