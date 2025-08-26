@@ -157,7 +157,7 @@ elif st.session_state['errors'] == False:
             st.session_state.pop('finaldf', None)
             st.stop()
                 
-        # 2) cross-check against REDCap SESSION (types there are strings)
+        # 2) check if the session number and patient ID pair entered matches with what is in REDCap SESSION, if the session number exists in REDCap SESSION database. 
         session_proj = load_project('REDCAP_SESSION')
         df_session = pd.DataFrame(session_proj.export_records())
         df_session['_record_str']  = df_session['record_id'].astype('string').str.strip()
