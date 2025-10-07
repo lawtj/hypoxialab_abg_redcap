@@ -119,17 +119,87 @@ if 'combined' in st.session_state:
     if sum(edited_df['Patient ID'] == "0000") >0:
         st.write('The row with Patient ID 0000 will be dropped') # not sure if we even need any message here...
         edited_df = edited_df[edited_df["Patient ID"] != "0000"]
+    # ---- UPI validation: catch nulls, blanks, and invalid entries ----
+    upi_str = edited_df['UPI'].astype('string').str.strip()
+    invalid_upi_mask = upi_str.eq('') | upi_str.isna()
+    # Try converting to numeric and flag anything that fails
+    upi_num = pd.to_numeric(upi_str, errors='coerce')
+    invalid_upi_mask |= upi_num.isna()
+    if invalid_upi_mask.any():
+        st.write('UPI column has missing or invalid values:',
+                edited_df.loc[invalid_upi_mask, 'Time Stamp'].tolist())
+        st.session_state['errors'] = True
+    # ---- Consistency check: each (Subject, Date Calc) matches exactly one UPI----
+    _tmp = edited_df.copy()
+    # Normalize to avoid false mismatches
+    _tmp['Date Calc_norm'] = pd.to_datetime(_tmp['Date Calc'], errors='coerce').dt.date
+    _tmp['Subject_norm']   = _tmp['Subject'].astype('string').str.strip()
+    _tmp['UPI_norm'] = pd.to_numeric(_tmp['UPI'], errors='coerce').astype('Int64')
+    _tmp_valid = _tmp.dropna(subset=['Date Calc_norm', 'Subject_norm', 'UPI_norm'])
+    # Count unique UPI per (Subject, Date Calc)
+    nuniq_per_group = (
+    _tmp_valid.groupby(['Subject_norm','Date Calc_norm'])['UPI_norm']
+              .nunique()
+    )
+    # Violations: groups with >1 distinct UPI
+    err_group = nuniq_per_group[nuniq_per_group > 1]
+    if not err_group.empty:
+        st.error("Each ABG file (Subject, Date Calc) must map to exactly one UPI. Conflicts found.")
+        # Detail rows to help fix: show all conflicting rows
+        detail = (
+            _tmp_valid
+            .set_index(['Subject_norm','Date Calc_norm'])
+            .loc[err_group.index] 
+            .reset_index()
+            [['Time Stamp','Subject_norm','Date Calc_norm','UPI_norm']]
+            .sort_values(['Subject_norm','Date Calc_norm','UPI_norm','Time Stamp'])
+            .rename(columns={
+                'Subject_norm':'Subject',
+                'Date Calc_norm':'Date Calc',
+                'UPI_norm':'UPI'
+            })
+            .reset_index(drop=True)
+        )
+        st.dataframe(detail)
+        st.session_state['errors'] = True
+    
+    # store the corrected dataframe for Step 3
+    st.session_state['edited_df'] = edited_df
+    
 ##############################################
 if 'errors' not in st.session_state:
     st.write('')
 elif st.session_state['errors'] == False:
     st.subheader('Step 3: Add session numbers')
-    upi_df = st.session_state['df1'].groupby(by=['Date Calc','UPI']).first().reset_index()
     
-    #get list of UPI and Dates
-    upi_df = upi_df[['Date Calc','UPI', 'Time Stamp']]
+    # use the user-edited table from Step 2 if available; fall back to df1
+    edited_df_for_sessions = st.session_state.get('edited_df', st.session_state['df1']).copy()
+
+    # normalize merge keys so they match later
+    edited_df_for_sessions['Date Calc'] = pd.to_datetime(edited_df_for_sessions['Date Calc'], errors='coerce')
+    edited_df_for_sessions['UPI'] = pd.to_numeric(edited_df_for_sessions['UPI'], errors='coerce').astype('Int64')
+
+    # build unique (Date Calc, UPI) pairs from Step 2 edited data
+    upi_df = (
+        edited_df_for_sessions[['Date Calc', 'UPI', 'Time Stamp']]
+        .drop_duplicates(subset=['Date Calc', 'UPI'])
+        .sort_values(['Date Calc', 'UPI'])
+        .reset_index(drop=True)
+    )
     upi_df['Session'] = np.nan
     upi_edits = st.data_editor(upi_df, num_rows='dynamic', key='upi_editor')
+    
+    # treat blanks as NaN, strip spaces, and coerce to Int64; invalids become NaN
+    sess_str = upi_edits['Session'].astype('string').str.strip()
+    upi_edits['Session'] = pd.to_numeric(sess_str, errors='coerce').astype('Int64')
+    
+    # normalize keys on the mapping as well (to match merge dtypes later)
+    upi_edits['Date Calc'] = pd.to_datetime(upi_edits['Date Calc'], errors='coerce')
+    upi_edits['UPI'] = pd.to_numeric(upi_edits['UPI'], errors='coerce').astype('Int64')
+    
+    blank_row_mask = upi_edits[['Date Calc', 'UPI', 'Session']].isna().all(axis=1)
+    if blank_row_mask.any():
+        upi_edits = upi_edits.loc[~blank_row_mask].copy()
 
     if st.button('Add Session Numbers to file'):
         # 0) check if any of the values in the Session column are null
@@ -200,6 +270,9 @@ elif st.session_state['errors'] == False:
         # drop 'Time Stamp' from upi_edits
         st.session_state['upi_df'] = upi_edits.reset_index()
         upi_edits.drop(columns=['Time Stamp'], inplace=True)
+        # Make sure the edited_df keys have the same dtype as upi_edits before merging
+        edited_df['Date Calc'] = pd.to_datetime(edited_df['Date Calc'], errors='coerce')
+        edited_df['UPI'] = pd.to_numeric(edited_df['UPI'], errors='coerce').astype('Int64')
         st.session_state['finaldf'] = edited_df.merge(upi_edits, on=['Date Calc','UPI'],how='left')
         st.session_state['finaldf'] = st.session_state['finaldf'][allcols_r]
         st.session_state['finaldf'].rename_axis('record_id', inplace=True)
