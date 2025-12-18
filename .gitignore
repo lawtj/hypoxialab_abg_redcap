@@ -3,3 +3,8 @@
 *.xlsx
 *.ipynb
 .streamlit
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
