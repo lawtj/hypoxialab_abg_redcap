@@ -1,3 +1,5 @@
 requests
 pycap
 pandas
+nicegui
+numpy
