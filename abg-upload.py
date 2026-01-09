@@ -17,7 +17,7 @@ project = load_project('REDCAP_ABG')
 fcols = ['Time Stamp', 'Date Calc', 'Time Calc', 'Subject', 'Sample', 'Patient ID', 'UPI', 'pH','pCO2', 'pO2', 'sO2','COHb','MetHb','tHb']
 
 #rcols = redcap columns including Session when it is created
-rcols = ['Subject', 'Time Stamp', 'Date Calc', 'Time Calc', 'Sample', 'Patient ID', 'UPI', 'Session', 'pH','pCO2', 'pO2', 'sO2','COHb','MetHb','tHb']
+rcols = ['Subject', 'Time Stamp', 'Date Calc', 'Time Calc', 'Sample', 'Patient ID', 'UPI', 'Session', 'pH','pCO2', 'pO2', 'sO2','COHb','MetHb','tHb','machine_serial']
 
 # allcols = the rest of the columns we actually want + feiner cols
 allcols = fcols + ['K+', 'Na+','Ca++','Cl-','Glucose','Lactate','p50','cBase']
@@ -25,7 +25,33 @@ allcols = fcols + ['K+', 'Na+','Ca++','Cl-','Glucose','Lactate','p50','cBase']
 # allcols_r = all columns we want + redcap cols
 allcols_r = rcols + ['K+', 'Na+','Ca++','Cl-','Glucose','Lactate','p50','cBase']
 
-def feinerize(datafr):
+def extract_serial_number(filename):
+    """
+    Extract the serial number from filename.
+    Expected format: "PatLog - 2026-01-06 10_18_31_I393-092Rxxxxxxx31.csv"
+    Serial number is expected to be between the last '-' and '.csv'
+    """
+    try:
+        if not filename.endswith('.csv'):
+            raise ValueError(f"File {filename} is not a CSV file")
+        
+        name_without_ext = filename[:-4]  # Remove '.csv'
+        
+        # Find the last '-' and extract everything after it
+        last_dash_index = name_without_ext.rfind('-')
+        if last_dash_index == -1:
+            raise ValueError(f"Filename format not expected: {filename}")
+        
+        serial_number = name_without_ext[last_dash_index + 1:]
+        if not serial_number or serial_number.strip() == '':
+            raise ValueError(f"Serial number not found in filename: {filename}")
+        
+        return serial_number.strip()
+    
+    except Exception as e:
+        raise ValueError(f"Error extracting serial number from {filename}: {str(e)}")
+    
+def feinerize(datafr, serial_number):
     #separate timestamp into two columns
     print('feinerizing')
     datafr['Time'] = pd.to_datetime(datafr['Time'])
@@ -40,6 +66,10 @@ def feinerize(datafr):
     except Exception as e:
         st.error('Error splitting Patient ID column into "Subject" and "Sample". Expecting "3.21" or similar. Check the Patient ID column for errors.')
         st.stop()
+    
+    # Add machine serial number to all rows
+    datafr['machine_serial'] = serial_number
+    
     # rename columns 
     datafr = datafr.rename(columns={"Time": 'Time Stamp',
     'pCO2 (mmHg)': 'pCO2',
@@ -58,7 +88,7 @@ def feinerize(datafr):
     'p50(act) (mmHg)':'p50',
     'cBase(Ecf) (mmol/L)':'cBase'},)
 
-    return datafr[allcols]
+    return datafr[allcols + ['machine_serial']]
 
 
 #start layout
@@ -89,14 +119,25 @@ else:
 if st.session_state['uploaded']==True:
     if st.button('Combine CSVs'):
         dfs = []
-        for num, file in enumerate(uploaded_files):
-            df = pd.read_csv(file, encoding = 'cp1252', converters={'Patient ID': str})
-            dfs.append(df)
-        df1 = pd.concat(dfs, ignore_index=True)
-        df1 = feinerize(df1)
-        st.session_state['combined'] = True
-        st.session_state['df1'] = df1
-
+        try:
+            for num, file in enumerate(uploaded_files):
+                # Extract serial number from filename
+                serial_number = extract_serial_number(file.name)
+                st.info(f"File: {file.name} → Machine Serial: {serial_number}")
+                
+                df = pd.read_csv(file, encoding = 'cp1252', converters={'Patient ID': str})
+                df = feinerize(df, serial_number)
+                dfs.append(df)
+            df1 = pd.concat(dfs, ignore_index=True)
+            # df1 = feinerize(df1)
+            st.session_state['combined'] = True
+            st.session_state['df1'] = df1
+            
+        except ValueError as e:
+            st.error(str(e))
+            st.error("Please ensure all filenames follow the format: 'PatLog - DATE_TIME-SERIALNUMBER.csv'")
+            st.stop()
+        
 ##############################################
 if 'combined' in st.session_state:
     st.subheader('Step 2: Correct errors')
