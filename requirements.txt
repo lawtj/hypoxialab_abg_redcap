@@ -1,4 +1,3 @@
 requests
 pycap
 pandas
-streamlit>=1.40.0
