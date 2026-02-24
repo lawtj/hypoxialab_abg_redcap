@@ -349,7 +349,7 @@ elif st.session_state['errors'] == False:
                                                                                     'p50':'p50',
                                                                                     'cBase':'cbase'})
         #re order columns
-        st.session_state['finaldf'] = st.session_state['finaldf'][['subject', 'time_stamp', 'date_calc', 'time_calc', 'sample', 'patient_id', 'session', 'ph', 'pco2', 'po2', 'so2', 'cohb', 'methb', 'thb', 'k', 'na', 'ca', 'cl', 'glucose', 'lactate', 'p50', 'cbase']]
+        st.session_state['finaldf'] = st.session_state['finaldf'][['subject', 'time_stamp', 'date_calc', 'time_calc', 'sample', 'patient_id', 'session', 'ph', 'pco2', 'po2', 'so2', 'cohb', 'methb', 'thb', 'k', 'na', 'ca', 'cl', 'glucose', 'lactate', 'p50', 'cbase', 'machine_serial']]
 
 if ('finaldf' in st.session_state) and (st.session_state.get('errors') is False): # make sure passing all checks before uploading
     st.subheader('Step 3: Upload & Download')
