@@ -12,7 +12,6 @@ def load_project(key):
 
 project = load_project('REDCAP_ABG')
 
-
 #fcols = feiner columns that he uses for processing
 fcols = ['Time Stamp', 'Date Calc', 'Time Calc', 'Subject', 'Sample', 'Patient ID', 'UPI', 'pH','pCO2', 'pO2', 'sO2','COHb','MetHb','tHb']
 
@@ -273,8 +272,12 @@ elif st.session_state['errors'] == False:
         df_session = pd.DataFrame(session_proj.export_records())
         df_session['_record_str']  = df_session['record_id'].astype('string').str.strip()
         df_session['_patient_str'] = df_session['patient_id'].astype('string').str.strip()
+        df_session = df_session[['_record_str', '_patient_str']]
+        df_session['_record_str'] = df_session['_record_str'].replace('', pd.NA)
+        df_session['_patient_str'] = df_session['_patient_str'].replace('', pd.NA)
+        df_session = df_session.dropna(subset=['_record_str', '_patient_str'])
         check = ed[['Time Stamp', '_SessionStr', '_UPIStr']].merge(
-            df_session[['_record_str', '_patient_str']],
+            df_session,
             left_on='_SessionStr', right_on='_record_str', how='left'
         )
         mismatches = check[
@@ -294,7 +297,7 @@ elif st.session_state['errors'] == False:
             
         # 3) check if the Session already exists in REDCap ABG database
         df_abg = pd.DataFrame(project.export_records())
-        s_abg = df_abg['session'].astype('string').str.strip()             
+        s_abg = df_abg['session'].astype('string').str.strip()
         s_ed  = ed['Session'].astype('Int64').astype('string').str.strip()     
         # list the duplicates (unique IDs)
         session_already_in_redcap = sorted(set(s_ed.dropna()) & set(s_abg.dropna()))
