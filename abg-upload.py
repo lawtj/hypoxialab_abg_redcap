@@ -4,13 +4,10 @@ import numpy as np
 import requests
 from redcap import Project
 
-def load_project(key):
+def load_project(key, api_url):
     api_key = st.secrets[key]
-    api_url = 'https://redcap.ucsf.edu/api/'
     project = Project(api_url, api_key)
     return project
-
-project = load_project('REDCAP_ABG')
 
 #fcols = feiner columns that he uses for processing
 fcols = ['Time Stamp', 'Date Calc', 'Time Calc', 'Subject', 'Sample', 'Patient ID', 'UPI', 'pH','pCO2', 'pO2', 'sO2','COHb','MetHb','tHb']
@@ -101,6 +98,20 @@ st.markdown('''
     3. **Add session numbers**: The app will alert you if there are missing session numbers. Every UPI should have a session number. You can add session numbers in the table below.
     4. **Upload to RedCap**: Once you have corrected all errors, you can upload the file to RedCap.
          ''')
+
+st.subheader('Select Location')
+location = st.selectbox('Select Location', ['UCSF', 'Uganda'], index=0)
+
+if location == 'Uganda':
+    abg_key = 'Uganda_REDCAP_ABG'
+    session_key = 'Uganda_REDCAP_SESSION'
+    api_url = 'https://redcap.ace.ac.ug/api/'
+else:
+    abg_key = 'REDCAP_ABG'
+    session_key = 'REDCAP_SESSION'
+    api_url = 'https://redcap.ucsf.edu/api/'
+
+project = load_project(abg_key, api_url)
 
 #############################################
 st.subheader('Step 1: upload files')
@@ -267,45 +278,55 @@ elif st.session_state['errors'] == False:
             st.session_state.pop('finaldf', None)
             st.stop()
                 
-        # 2) check if the session number and patient ID pair entered matches with what is in REDCap SESSION, if the session number exists in REDCap SESSION database. 
-        session_proj = load_project('REDCAP_SESSION')
+        # 2) check if Session ↔ UPI matches REDCap SESSION when reference records exist
+        session_proj = load_project(session_key, api_url)
         df_session = pd.DataFrame(session_proj.export_records())
-        df_session['_record_str']  = df_session['record_id'].astype('string').str.strip()
-        df_session['_patient_str'] = df_session['patient_id'].astype('string').str.strip()
-        df_session = df_session[['_record_str', '_patient_str']]
-        df_session['_record_str'] = df_session['_record_str'].replace('', pd.NA)
-        df_session['_patient_str'] = df_session['_patient_str'].replace('', pd.NA)
-        df_session = df_session.dropna(subset=['_record_str', '_patient_str'])
-        check = ed[['Time Stamp', '_SessionStr', '_UPIStr']].merge(
-            df_session,
-            left_on='_SessionStr', right_on='_record_str', how='left'
-        )
-        mismatches = check[
-            check['_patient_str'].notna() & (check['_patient_str'] != check['_UPIStr'])
-        ]
-        if not mismatches.empty:
-            st.error("Session ↔ UPI mismatch vs REDCap SESSION:")
-            st.dataframe(
-                mismatches[['Time Stamp', '_SessionStr', '_UPIStr', '_patient_str']]
-                .rename(columns={'_SessionStr':'Session',
-                                '_UPIStr':'UPI (ABG file)',
-                                '_patient_str':'UPI (REDCap SESSION)'})
+        required_session_cols = {'record_id', 'patient_id'}
+        if df_session.empty or not required_session_cols.issubset(df_session.columns):
+            st.info(
+                "REDCap SESSION has no records yet (or is missing record_id/patient_id). "
+                "Skipping Session ↔ UPI cross-check."
             )
-            st.session_state['errors'] = True
-            st.session_state.pop('finaldf', None)
-            st.stop()
+        else:
+            df_session['_record_str'] = df_session['record_id'].astype('string').str.strip()
+            df_session['_patient_str'] = df_session['patient_id'].astype('string').str.strip()
+            df_session = df_session[['_record_str', '_patient_str']]
+            df_session['_record_str'] = df_session['_record_str'].replace('', pd.NA)
+            df_session['_patient_str'] = df_session['_patient_str'].replace('', pd.NA)
+            df_session = df_session.dropna(subset=['_record_str', '_patient_str'])
+            check = ed[['Time Stamp', '_SessionStr', '_UPIStr']].merge(
+                df_session,
+                left_on='_SessionStr', right_on='_record_str', how='left'
+            )
+            mismatches = check[
+                check['_patient_str'].notna() & (check['_patient_str'] != check['_UPIStr'])
+            ]
+            if not mismatches.empty:
+                st.error("Session ↔ UPI mismatch vs REDCap SESSION:")
+                st.dataframe(
+                    mismatches[['Time Stamp', '_SessionStr', '_UPIStr', '_patient_str']]
+                    .rename(columns={'_SessionStr': 'Session',
+                                    '_UPIStr': 'UPI (ABG file)',
+                                    '_patient_str': 'UPI (REDCap SESSION)'})
+                )
+                st.session_state['errors'] = True
+                st.session_state.pop('finaldf', None)
+                st.stop()
             
         # 3) check if the Session already exists in REDCap ABG database
         df_abg = pd.DataFrame(project.export_records())
-        s_abg = df_abg['session'].astype('string').str.strip()
-        s_ed  = ed['Session'].astype('Int64').astype('string').str.strip()     
-        # list the duplicates (unique IDs)
-        session_already_in_redcap = sorted(set(s_ed.dropna()) & set(s_abg.dropna()))
-        if session_already_in_redcap:
-            st.error(f"These Session IDs already exist in REDCap ABG: {session_already_in_redcap}")
-            st.session_state['errors'] = True
-            st.session_state.pop('finaldf', None)
-            st.stop()
+        if df_abg.empty or 'session' not in df_abg.columns:
+            st.info("REDCap ABG has no existing session records yet. Skipping duplicate Session check.")
+        else:
+            s_abg = df_abg['session'].astype('string').str.strip()
+            s_ed = ed['Session'].astype('Int64').astype('string').str.strip()
+            # list the duplicates (unique IDs)
+            session_already_in_redcap = sorted(set(s_ed.dropna()) & set(s_abg.dropna()))
+            if session_already_in_redcap:
+                st.error(f"These Session IDs already exist in REDCap ABG: {session_already_in_redcap}")
+                st.session_state['errors'] = True
+                st.session_state.pop('finaldf', None)
+                st.stop()
         
         # ONLY when all checks pass, build finaldf:
         st.session_state['errors'] = False
