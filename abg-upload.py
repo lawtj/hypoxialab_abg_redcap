@@ -21,6 +21,25 @@ allcols = fcols + ['K+', 'Na+','Ca++','Cl-','Glucose','Lactate','p50','cBase']
 # allcols_r = all columns we want + redcap cols
 allcols_r = rcols + ['K+', 'Na+','Ca++','Cl-','Glucose','Lactate','p50','cBase']
 
+
+def _format_date_human(date_value):
+    dt = pd.to_datetime(date_value, errors='coerce')
+    if pd.isna(dt):
+        return str(date_value)
+    return f"{dt.strftime('%B')} {dt.day}, {dt.year}"
+
+
+def normalize_id(value):
+    if pd.isna(value):
+        return pd.NA
+    value_str = str(value).strip()
+    if value_str == '' or value_str.lower() == 'nan':
+        return pd.NA
+    try:
+        return str(int(float(value_str)))
+    except (TypeError, ValueError):
+        return value_str
+
 def extract_serial_number(filename):
     """
     Extract the serial number from filename.
@@ -57,11 +76,36 @@ def feinerize(datafr, serial_number):
     datafr['Time Calc'] =  datafr['Time'].dt.time
 
     #separate patient ID into two columns
-    try:
-        datafr[['Subject', 'Sample']] = datafr['Patient ID'].astype(str).str.split(pat='.', expand=True)
-    except Exception as e:
-        st.error('Error splitting Patient ID column into "Subject" and "Sample". Expecting "3.21" or similar. Check the Patient ID column for errors.')
+    patient_id = datafr['Patient ID'].astype('string').str.strip()
+    split_pid = patient_id.str.split('.', n=1, expand=True)
+    if split_pid.shape[1] < 2:
+        split_pid[1] = pd.NA
+
+    subject_part = split_pid[0].astype('string').str.strip()
+    sample_part = split_pid[1].astype('string').str.strip()
+    has_dot = patient_id.str.contains(r'\.', regex=True, na=False)
+    invalid_pid_mask = (
+        patient_id.isna() | patient_id.eq('') |
+        (~has_dot) |
+        subject_part.isna() | subject_part.eq('') |
+        sample_part.isna() | sample_part.eq('')
+    )
+    if invalid_pid_mask.any():
+        bad_rows = datafr.loc[invalid_pid_mask, ['Time', 'Patient ID']].copy()
+        bad_rows['Time'] = bad_rows['Time'].astype('string')
+        bad_rows['Patient ID'] = bad_rows['Patient ID'].astype('string')
+        problem_rows = "; ".join(
+            [f"Time {row['Time']} with Patient ID '{row['Patient ID']}'"
+             for _, row in bad_rows.iterrows()]
+        )
+        st.error(
+            'Could not split Patient ID into "Subject" and "Sample". '
+            f"Problem rows: {problem_rows}. Expected format like '3.21'. Please check and update."
+        )
         st.stop()
+
+    datafr['Subject'] = subject_part
+    datafr['Sample'] = sample_part
     
     # Add machine serial number to all rows
     datafr['machine_serial'] = serial_number
@@ -129,8 +173,10 @@ else:
 if st.session_state['uploaded']==True:
     if st.button('Combine CSVs'):
         dfs = []
+        current_filename = None
         try:
             for num, file in enumerate(uploaded_files):
+                current_filename = file.name
                 # Extract serial number from filename
                 serial_number = extract_serial_number(file.name)
                 st.info(f"File: {file.name} → Machine Serial: {serial_number}")
@@ -145,7 +191,13 @@ if st.session_state['uploaded']==True:
             
         except ValueError as e:
             st.error(str(e))
-            st.error("Please ensure all filenames follow the format: 'PatLog - DATE_TIME-SERIALNUMBER.csv'")
+            if current_filename:
+                st.error(
+                    "Problem filename: "
+                    f"{current_filename}. Please use format 'PatLog - YYYY-MM-DD HH_MM_SS-SERIALNUMBER.csv'."
+                )
+            else:
+                st.error("Please ensure all filenames follow the format: 'PatLog - YYYY-MM-DD HH_MM_SS-SERIALNUMBER.csv'.")
             st.stop()
         
 ##############################################
@@ -195,23 +247,25 @@ if 'combined' in st.session_state:
     # Violations: groups with >1 distinct UPI
     err_group = nuniq_per_group[nuniq_per_group > 1]
     if not err_group.empty:
-        st.error("Each ABG file (Subject, Date Calc) must map to exactly one UPI. Conflicts found.")
-        # Detail rows to help fix: show all conflicting rows
-        detail = (
+        conflict_rows = (
             _tmp_valid
-            .set_index(['Subject_norm','Date Calc_norm'])
-            .loc[err_group.index] 
+            .set_index(['Subject_norm', 'Date Calc_norm'])
+            .loc[err_group.index]
             .reset_index()
-            [['Time Stamp','Subject_norm','Date Calc_norm','UPI_norm']]
-            .sort_values(['Subject_norm','Date Calc_norm','UPI_norm','Time Stamp'])
-            .rename(columns={
-                'Subject_norm':'Subject',
-                'Date Calc_norm':'Date Calc',
-                'UPI_norm':'UPI'
-            })
-            .reset_index(drop=True)
         )
-        st.dataframe(detail)
+        conflict_summary = []
+        for (subject, date_calc), grp in conflict_rows.groupby(['Subject_norm', 'Date Calc_norm']):
+            upis = sorted(grp['UPI_norm'].dropna().astype('Int64').astype('string').unique().tolist())
+            conflict_summary.append(
+                f"Subject {subject} on {_format_date_human(date_calc)} listed with UPI {', '.join(upis)}"
+            )
+        conflict_lines = "\n".join([f"- {item}" for item in conflict_summary])
+        st.error(
+            "Each Subject and Date Calc pair must map to exactly one UPI.\n\n"
+            "Conflicts found:\n"
+            f"{conflict_lines}\n\n"
+            "Please check and update."
+        )
         st.session_state['errors'] = True
     
     # store the corrected dataframe for Step 3
@@ -272,8 +326,21 @@ elif st.session_state['errors'] == False:
         )
         err_sess = sess_to_upi[sess_to_upi > 1]
         if not err_sess.empty:
-            st.error("Some Session values map to multiple UPIs: " +
-                    ", ".join([f"session {s} ({n} UPIs)" for s, n in err_sess.items()]))
+            sess_upi_map = (
+                ed.dropna(subset=['_SessionStr', '_UPIStr'])
+                .groupby('_SessionStr')['_UPIStr']
+                .apply(lambda s: sorted(set(s.astype('string').tolist())))
+            )
+            conflict_items = [
+                f"Session {s} listed with UPI {', '.join(sess_upi_map.loc[s])}" for s in err_sess.index
+            ]
+            conflicting_lines = "\n".join([f"- {item}" for item in conflict_items])
+            st.error(
+                "Some Session values map to multiple UPIs.\n\n"
+                "Conflicts found:\n"
+                f"{conflicting_lines}\n\n"
+                "Please check and update."
+            )
             st.session_state['errors'] = True
             st.session_state.pop('finaldf', None)
             st.stop()
@@ -302,7 +369,24 @@ elif st.session_state['errors'] == False:
                 check['_patient_str'].notna() & (check['_patient_str'] != check['_UPIStr'])
             ]
             if not mismatches.empty:
-                st.error("Session ↔ UPI mismatch vs REDCap SESSION:")
+                mismatch_summary = []
+                mismatch_unique = mismatches[['_SessionStr', '_UPIStr', '_patient_str']].drop_duplicates()
+                for _, row in mismatch_unique.iterrows():
+                    mismatch_summary.append(
+                        f"Session {row['_SessionStr']} has UPI {row['_UPIStr']} in file but {row['_patient_str']} in REDCap SESSION"
+                    )
+                mismatch_lines = "\n".join([f"- {item}" for item in mismatch_summary])
+                mismatch_header = (
+                    "Session number entered does not match with records in REDCap SESSION."
+                    if len(mismatch_summary) == 1
+                    else "Session numbers entered do not match with records in REDCap SESSION."
+                )
+                st.error(
+                    f"{mismatch_header}\n\n"
+                    "Conflicts found:\n"
+                    f"{mismatch_lines}\n\n"
+                    "Please check and update."
+                )
                 st.dataframe(
                     mismatches[['Time Stamp', '_SessionStr', '_UPIStr', '_patient_str']]
                     .rename(columns={'_SessionStr': 'Session',
@@ -313,17 +397,49 @@ elif st.session_state['errors'] == False:
                 st.session_state.pop('finaldf', None)
                 st.stop()
             
-        # 3) check if the Session already exists in REDCap ABG database
+        # 3) check if the Session/UPI combination already exists in REDCap ABG database
         df_abg = pd.DataFrame(project.export_records())
-        if df_abg.empty or 'session' not in df_abg.columns:
-            st.info("REDCap ABG has no existing session records yet. Skipping duplicate Session check.")
+        required_abg_cols = {'session', 'patient_id'}
+        if df_abg.empty or not required_abg_cols.issubset(df_abg.columns):
+            st.info("REDCap ABG has no existing session/patient_id records yet. Skipping duplicate Session/UPI check.")
         else:
-            s_abg = df_abg['session'].astype('string').str.strip()
-            s_ed = ed['Session'].astype('Int64').astype('string').str.strip()
-            # list the duplicates (unique IDs)
-            session_already_in_redcap = sorted(set(s_ed.dropna()) & set(s_abg.dropna()))
-            if session_already_in_redcap:
-                st.error(f"These Session IDs already exist in REDCap ABG: {session_already_in_redcap}")
+            df_abg['_SessionStr'] = df_abg['session'].astype('string').str.strip().map(normalize_id)
+            df_abg['_UPIStr'] = df_abg['patient_id'].astype('string').str.strip().map(normalize_id)
+            df_abg['_SessionStr'] = df_abg['_SessionStr'].replace('', pd.NA)
+            df_abg['_UPIStr'] = df_abg['_UPIStr'].replace('', pd.NA)
+            abg_pairs = (
+                df_abg[['_SessionStr', '_UPIStr']]
+                .dropna(subset=['_SessionStr', '_UPIStr'])
+                .drop_duplicates()
+            )
+
+            incoming_pairs = (
+                ed[['Time Stamp', '_SessionStr', '_UPIStr']]
+                .copy()
+                .dropna(subset=['_SessionStr', '_UPIStr'])
+                .drop_duplicates()
+            )
+            incoming_pairs['_SessionStr'] = incoming_pairs['_SessionStr'].map(normalize_id)
+            incoming_pairs['_UPIStr'] = incoming_pairs['_UPIStr'].map(normalize_id)
+
+            duplicate_rows = (
+                incoming_pairs
+                .merge(abg_pairs, on=['_SessionStr', '_UPIStr'], how='inner')
+                .sort_values(['_SessionStr', '_UPIStr', 'Time Stamp'])
+            )
+            if not duplicate_rows.empty:
+                duplicate_pairs = duplicate_rows[['_SessionStr', '_UPIStr']].drop_duplicates()
+                duplicate_items = [
+                    f"Session {row['_SessionStr']} with UPI {row['_UPIStr']}"
+                    for _, row in duplicate_pairs.iterrows()
+                ]
+                duplicate_lines = "\n".join([f"- {item}" for item in duplicate_items])
+                st.error(
+                    "These Session and UPI combinations already exist in REDCap ABG.\n\n"
+                    "Conflicts found:\n"
+                    f"{duplicate_lines}\n\n"
+                    "Please check and update."
+                )
                 st.session_state['errors'] = True
                 st.session_state.pop('finaldf', None)
                 st.stop()
