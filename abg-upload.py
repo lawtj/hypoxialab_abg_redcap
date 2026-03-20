@@ -147,9 +147,12 @@ st.subheader('Select Location')
 location = st.selectbox('Select Location', ['UCSF', 'Uganda'], index=0)
 
 if location == 'Uganda':
-    abg_key = 'Uganda_REDCAP_ABG'
-    session_key = 'Uganda_REDCAP_SESSION'
-    api_url = 'https://redcap.ace.ac.ug/api/'
+    # abg_key = 'Uganda_REDCAP_ABG'
+    # session_key = 'Uganda_REDCAP_SESSION'
+    # api_url = 'https://redcap.ace.ac.ug/api/'
+    abg_key = 'Uganda_REDCAP_ABG_UCSF'
+    session_key = 'Uganda_REDCAP_SESSION_UCSF'
+    api_url = 'https://redcap.ucsf.edu/api/'
 else:
     abg_key = 'REDCAP_ABG'
     session_key = 'REDCAP_SESSION'
@@ -261,7 +264,7 @@ if 'combined' in st.session_state:
             )
         conflict_lines = "\n".join([f"- {item}" for item in conflict_summary])
         st.error(
-            "Each Subject and Date Calc pair must map to exactly one UPI.\n\n"
+            "Each Subject and Date pair must map to exactly one UPI.\n\n"
             "Conflicts found:\n"
             f"{conflict_lines}\n\n"
             "Please check and update."
