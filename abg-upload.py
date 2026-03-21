@@ -421,11 +421,15 @@ elif st.session_state['errors'] == False:
                 .drop_duplicates()
             )
 
+            duplicate_check_rows = edited_df.copy()
+            duplicate_check_rows['Date Calc'] = pd.to_datetime(duplicate_check_rows['Date Calc'], errors='coerce')
+            duplicate_check_rows['UPI'] = pd.to_numeric(duplicate_check_rows['UPI'], errors='coerce').astype('Int64')
+
             # Build duplicate-check keys from the uploaded ABG rows, then add the
             # Session values from the helper table. We do it this way because the
             # helper table does not include machine_serial, but the uploaded rows do.
             incoming_pairs = (
-                edited_df[['Time Stamp', 'Date Calc', 'UPI', 'machine_serial']]
+                duplicate_check_rows[['Time Stamp', 'Date Calc', 'UPI', 'machine_serial']]
                 .merge(
                     upi_edits[['Date Calc', 'UPI', 'Session']],
                     on=['Date Calc', 'UPI'],
