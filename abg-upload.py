@@ -40,6 +40,27 @@ def normalize_id(value):
     except (TypeError, ValueError):
         return value_str
 
+
+def split_patient_id_columns(patient_id_series):
+    patient_id = patient_id_series.astype('string').str.strip()
+    split_pid = patient_id.str.split('.', n=1, expand=True)
+    if split_pid.shape[1] < 2:
+        split_pid[1] = pd.NA
+
+    subject_part = split_pid[0].astype('string').str.strip()
+    sample_part = split_pid[1].astype('string').str.strip()
+    has_dot = patient_id.str.contains(r'\.', regex=True, na=False)
+    invalid_pid_mask = (
+        patient_id.isna() | patient_id.eq('') |
+        (~has_dot) |
+        subject_part.isna() | subject_part.eq('') |
+        sample_part.isna() | sample_part.eq('')
+    )
+
+    subject_part = subject_part.mask(invalid_pid_mask, pd.NA)
+    sample_part = sample_part.mask(invalid_pid_mask, pd.NA)
+    return subject_part, sample_part, invalid_pid_mask
+
 def extract_serial_number(filename):
     """
     Extract the serial number from filename.
@@ -76,20 +97,7 @@ def feinerize(datafr, serial_number):
     datafr['Time Calc'] =  datafr['Time'].dt.time
 
     #separate patient ID into two columns
-    patient_id = datafr['Patient ID'].astype('string').str.strip()
-    split_pid = patient_id.str.split('.', n=1, expand=True)
-    if split_pid.shape[1] < 2:
-        split_pid[1] = pd.NA
-
-    subject_part = split_pid[0].astype('string').str.strip()
-    sample_part = split_pid[1].astype('string').str.strip()
-    has_dot = patient_id.str.contains(r'\.', regex=True, na=False)
-    invalid_pid_mask = (
-        patient_id.isna() | patient_id.eq('') |
-        (~has_dot) |
-        subject_part.isna() | subject_part.eq('') |
-        sample_part.isna() | sample_part.eq('')
-    )
+    subject_part, sample_part, invalid_pid_mask = split_patient_id_columns(datafr['Patient ID'])
     if invalid_pid_mask.any():
         bad_rows = datafr.loc[invalid_pid_mask, ['Time', 'Patient ID']].copy()
         bad_rows['Time'] = bad_rows['Time'].astype('string')
@@ -98,11 +106,11 @@ def feinerize(datafr, serial_number):
             [f"Time {row['Time']} with Patient ID '{row['Patient ID']}'"
              for _, row in bad_rows.iterrows()]
         )
-        st.error(
-            'Could not split Patient ID into "Subject" and "Sample". '
-            f"Problem rows: {problem_rows}. Expected format like '3.21'. Please check and update."
+        st.warning(
+            'Some Patient ID values could not be split into "Subject" and "Sample". '
+            f"Problem rows: {problem_rows}. Expected format like '3.21'. "
+            'Those rows will stay editable in Step 2 so you can correct them.'
         )
-        st.stop()
 
     datafr['Subject'] = subject_part
     datafr['Sample'] = sample_part
@@ -207,6 +215,9 @@ if st.session_state['uploaded']==True:
 if 'combined' in st.session_state:
     st.subheader('Step 2: Correct errors')
     edited_df = st.data_editor(st.session_state['df1'].sort_values(by='Time Stamp'), num_rows='dynamic', key='data_editor')
+    # Rebuild Subject and Sample from the edited Patient ID values so users can
+    # fix bad IDs here instead of being blocked earlier in the upload flow.
+    edited_df['Subject'], edited_df['Sample'], invalid_pid_mask = split_patient_id_columns(edited_df['Patient ID'])
     #count the number of null values in Subject, sample, patient id, and UPI columns
     df1= edited_df
     st.session_state['errors'] = False
@@ -218,6 +229,12 @@ if 'combined' in st.session_state:
         st.session_state['errors'] = True
     if edited_df['Patient ID'].isnull().sum() >0:
         st.write('Patient ID column has null values: ', edited_df[edited_df['Patient ID'].isnull()]['Time Stamp'].tolist())
+        st.session_state['errors'] = True
+    if invalid_pid_mask.any():
+        st.write(
+            "Patient ID must look like '3.21'. These rows still need to be corrected: ",
+            edited_df.loc[invalid_pid_mask, 'Time Stamp'].tolist()
+        )
         st.session_state['errors'] = True
     if edited_df['UPI'].isnull().sum() >0:
         st.write('UPI column has null values: ', edited_df[edited_df['UPI'].isnull()]['Time Stamp'].tolist())
