@@ -400,45 +400,64 @@ elif st.session_state['errors'] == False:
                 st.session_state.pop('finaldf', None)
                 st.stop()
             
-        # 3) check if the Session/UPI combination already exists in REDCap ABG database
+        # 3) check if the Session/UPI/machine_serial combination already exists in REDCap ABG database
         df_abg = pd.DataFrame(project.export_records())
-        required_abg_cols = {'session', 'patient_id'}
+        required_abg_cols = {'session', 'patient_id', 'machine_serial'}
         if df_abg.empty or not required_abg_cols.issubset(df_abg.columns):
-            st.info("REDCap ABG has no existing session/patient_id records yet. Skipping duplicate Session/UPI check.")
+            st.info(
+                "REDCap ABG has no existing session/patient_id/machine_serial records yet. "
+                "Skipping duplicate Session/UPI/machine check."
+            )
         else:
             df_abg['_SessionStr'] = df_abg['session'].astype('string').str.strip().map(normalize_id)
             df_abg['_UPIStr'] = df_abg['patient_id'].astype('string').str.strip().map(normalize_id)
+            df_abg['_MachineSerialStr'] = df_abg['machine_serial'].astype('string').str.strip()
             df_abg['_SessionStr'] = df_abg['_SessionStr'].replace('', pd.NA)
             df_abg['_UPIStr'] = df_abg['_UPIStr'].replace('', pd.NA)
+            df_abg['_MachineSerialStr'] = df_abg['_MachineSerialStr'].replace('', pd.NA)
             abg_pairs = (
-                df_abg[['_SessionStr', '_UPIStr']]
-                .dropna(subset=['_SessionStr', '_UPIStr'])
+                df_abg[['_SessionStr', '_UPIStr', '_MachineSerialStr']]
+                .dropna(subset=['_SessionStr', '_UPIStr', '_MachineSerialStr'])
                 .drop_duplicates()
             )
 
+            # Build duplicate-check keys from the uploaded ABG rows, then add the
+            # Session values from the helper table. We do it this way because the
+            # helper table does not include machine_serial, but the uploaded rows do.
             incoming_pairs = (
-                ed[['Time Stamp', '_SessionStr', '_UPIStr']]
-                .copy()
-                .dropna(subset=['_SessionStr', '_UPIStr'])
+                edited_df[['Time Stamp', 'Date Calc', 'UPI', 'machine_serial']]
+                .merge(
+                    upi_edits[['Date Calc', 'UPI', 'Session']],
+                    on=['Date Calc', 'UPI'],
+                    how='left'
+                )
+            )
+            incoming_pairs['_SessionStr'] = incoming_pairs['Session'].astype('string').str.strip().map(normalize_id)
+            incoming_pairs['_UPIStr'] = incoming_pairs['UPI'].astype('string').str.strip().map(normalize_id)
+            incoming_pairs['_MachineSerialStr'] = incoming_pairs['machine_serial'].astype('string').str.strip()
+            incoming_pairs['_SessionStr'] = incoming_pairs['_SessionStr'].replace('', pd.NA)
+            incoming_pairs['_UPIStr'] = incoming_pairs['_UPIStr'].replace('', pd.NA)
+            incoming_pairs['_MachineSerialStr'] = incoming_pairs['_MachineSerialStr'].replace('', pd.NA)
+            incoming_pairs = (
+                incoming_pairs[['Time Stamp', '_SessionStr', '_UPIStr', '_MachineSerialStr']]
+                .dropna(subset=['_SessionStr', '_UPIStr', '_MachineSerialStr'])
                 .drop_duplicates()
             )
-            incoming_pairs['_SessionStr'] = incoming_pairs['_SessionStr'].map(normalize_id)
-            incoming_pairs['_UPIStr'] = incoming_pairs['_UPIStr'].map(normalize_id)
 
             duplicate_rows = (
                 incoming_pairs
-                .merge(abg_pairs, on=['_SessionStr', '_UPIStr'], how='inner')
-                .sort_values(['_SessionStr', '_UPIStr', 'Time Stamp'])
+                .merge(abg_pairs, on=['_SessionStr', '_UPIStr', '_MachineSerialStr'], how='inner')
+                .sort_values(['_SessionStr', '_UPIStr', '_MachineSerialStr', 'Time Stamp'])
             )
             if not duplicate_rows.empty:
-                duplicate_pairs = duplicate_rows[['_SessionStr', '_UPIStr']].drop_duplicates()
+                duplicate_pairs = duplicate_rows[['_SessionStr', '_UPIStr', '_MachineSerialStr']].drop_duplicates()
                 duplicate_items = [
-                    f"Session {row['_SessionStr']} with UPI {row['_UPIStr']}"
+                    f"Session {row['_SessionStr']} with UPI {row['_UPIStr']} on machine {row['_MachineSerialStr']}"
                     for _, row in duplicate_pairs.iterrows()
                 ]
                 duplicate_lines = "\n".join([f"- {item}" for item in duplicate_items])
                 st.error(
-                    "These Session and UPI combinations already exist in REDCap ABG.\n\n"
+                    "These Session, UPI, and machine serial combinations already exist in REDCap ABG.\n\n"
                     "Conflicts found:\n"
                     f"{duplicate_lines}\n\n"
                     "Please check and update."
