@@ -221,18 +221,17 @@ if 'combined' in st.session_state:
     #count the number of null values in Subject, sample, patient id, and UPI columns
     df1= edited_df
     st.session_state['errors'] = False
-    if edited_df['Subject'].isnull().sum() >0:
-        st.write('Subject column has null values: ', edited_df[edited_df['Subject'].isnull()]['Time Stamp'].tolist())
+    subject_null_mask = edited_df['Subject'].isnull() & ~invalid_pid_mask
+    sample_null_mask = edited_df['Sample'].isnull() & ~invalid_pid_mask
+    if subject_null_mask.any():
+        st.write('Subject column has null values: ', edited_df.loc[subject_null_mask, 'Time Stamp'].tolist())
         st.session_state['errors'] = True
-    if edited_df['Sample'].isnull().sum() >0:
-        st.write('Sample column has null values: ', edited_df[edited_df['Sample'].isnull()]['Time Stamp'].tolist())
-        st.session_state['errors'] = True
-    if edited_df['Patient ID'].isnull().sum() >0:
-        st.write('Patient ID column has null values: ', edited_df[edited_df['Patient ID'].isnull()]['Time Stamp'].tolist())
+    if sample_null_mask.any():
+        st.write('Sample column has null values: ', edited_df.loc[sample_null_mask, 'Time Stamp'].tolist())
         st.session_state['errors'] = True
     if invalid_pid_mask.any():
         st.write(
-            "Patient ID must look like '3.21'. These rows still need to be corrected: ",
+            "Patient ID is missing or not in the right format ('3.21'). Please fix Patient ID in these rows. Subject and Sample are filled automatically from Patient ID: ",
             edited_df.loc[invalid_pid_mask, 'Time Stamp'].tolist()
         )
         st.session_state['errors'] = True
