@@ -44,18 +44,12 @@ def normalize_id(value):
 def split_patient_id_columns(patient_id_series, location='UCSF'):
     patient_id = patient_id_series.astype('string').str.strip()
     if location == 'Uganda':
-        split_pid = patient_id.str.split('.', n=1, expand=True)
-        if split_pid.shape[1] < 2:
-            split_pid[1] = pd.NA
-
-        has_dot = patient_id.str.contains(r'\.', regex=True, na=False)
         integer_sample = patient_id.map(normalize_id).astype('string').str.strip()
-        decimal_sample = split_pid[1].astype('string').str.strip()
-        sample_part = decimal_sample.where(has_dot, integer_sample)
-        invalid_pid_mask = patient_id.isna() | patient_id.eq('') | sample_part.isna() | sample_part.eq('')
-        # Uganda accepts either a simple integer Patient ID or a decimal-style
-        # value; when a decimal is present, the sample number is the part after
-        # the dot.
+        has_dot = patient_id.str.contains(r'\.', regex=True, na=False)
+        sample_part = integer_sample.mask(has_dot, pd.NA)
+        invalid_pid_mask = patient_id.isna() | patient_id.eq('') | has_dot | sample_part.isna() | sample_part.eq('')
+        # Uganda ABG files use a simple integer Patient ID that maps directly
+        # to the sample number.
         subject_part = sample_part.mask(invalid_pid_mask, pd.NA)
         sample_part = sample_part.mask(invalid_pid_mask, pd.NA)
         return subject_part, sample_part, invalid_pid_mask
@@ -126,7 +120,7 @@ def feinerize(datafr, serial_number, location='UCSF'):
             [f"Time {row['Time']} with Patient ID '{row['Patient ID']}'"
              for _, row in bad_rows.iterrows()]
         )
-        expected_format = "a simple integer like '21' or a decimal like '3.21'" if location == 'Uganda' else "format like '3.21'"
+        expected_format = "a simple integer like '21'" if location == 'Uganda' else "format like '3.21'"
         st.warning(
             'Some Patient ID values could not be split into "Subject" and "Sample". '
             f"Problem rows: {problem_rows}. Expected {expected_format}. "
@@ -254,7 +248,7 @@ if 'combined' in st.session_state:
         st.write('Sample column has null values: ', edited_df.loc[sample_null_mask, 'Time Stamp'].tolist())
         st.session_state['errors'] = True
     if invalid_pid_mask.any():
-        expected_format = "a simple integer like '21' or a decimal like '3.21'" if location == 'Uganda' else "'3.21'"
+        expected_format = "a simple integer like '21'" if location == 'Uganda' else "'3.21'"
         st.write(
             f"Patient ID is missing or not in the right format ({expected_format}). Please fix Patient ID in these rows. Subject and Sample are filled automatically from Patient ID: ",
             edited_df.loc[invalid_pid_mask, 'Time Stamp'].tolist()
@@ -276,41 +270,47 @@ if 'combined' in st.session_state:
         st.write('UPI column has missing or invalid values:',
                 edited_df.loc[invalid_upi_mask, 'Time Stamp'].tolist())
         st.session_state['errors'] = True
-    # ---- Consistency check: each (Subject, Date Calc) matches exactly one UPI----
-    _tmp = edited_df.copy()
-    # Normalize to avoid false mismatches
-    _tmp['Date Calc_norm'] = pd.to_datetime(_tmp['Date Calc'], errors='coerce').dt.date
-    _tmp['Subject_norm']   = _tmp['Subject'].astype('string').str.strip()
-    _tmp['UPI_norm'] = pd.to_numeric(_tmp['UPI'], errors='coerce').astype('Int64')
-    _tmp_valid = _tmp.dropna(subset=['Date Calc_norm', 'Subject_norm', 'UPI_norm'])
-    # Count unique UPI per (Subject, Date Calc)
-    nuniq_per_group = (
-    _tmp_valid.groupby(['Subject_norm','Date Calc_norm'])['UPI_norm']
-              .nunique()
-    )
-    # Violations: groups with >1 distinct UPI
-    err_group = nuniq_per_group[nuniq_per_group > 1]
-    if not err_group.empty:
-        conflict_rows = (
-            _tmp_valid
-            .set_index(['Subject_norm', 'Date Calc_norm'])
-            .loc[err_group.index]
-            .reset_index()
+    # UCSF Patient ID values encode subject/sample (for example, "3.21"), so
+    # it is reasonable there to expect each subject/date pair to map to one
+    # accession number. Uganda Patient ID values are sample numbers, and the
+    # same sample number can legitimately recur on the same date under
+    # different accession numbers, so we skip this check there.
+    if location == 'UCSF':
+        # ---- Consistency check: each (Subject, Date Calc) matches exactly one UPI----
+        _tmp = edited_df.copy()
+        # Normalize to avoid false mismatches
+        _tmp['Date Calc_norm'] = pd.to_datetime(_tmp['Date Calc'], errors='coerce').dt.date
+        _tmp['Subject_norm']   = _tmp['Subject'].astype('string').str.strip()
+        _tmp['UPI_norm'] = pd.to_numeric(_tmp['UPI'], errors='coerce').astype('Int64')
+        _tmp_valid = _tmp.dropna(subset=['Date Calc_norm', 'Subject_norm', 'UPI_norm'])
+        # Count unique UPI per (Subject, Date Calc)
+        nuniq_per_group = (
+        _tmp_valid.groupby(['Subject_norm','Date Calc_norm'])['UPI_norm']
+                  .nunique()
         )
-        conflict_summary = []
-        for (subject, date_calc), grp in conflict_rows.groupby(['Subject_norm', 'Date Calc_norm']):
-            upis = sorted(grp['UPI_norm'].dropna().astype('Int64').astype('string').unique().tolist())
-            conflict_summary.append(
-                f"Subject {subject} on {_format_date_human(date_calc)} listed with UPI {', '.join(upis)}"
+        # Violations: groups with >1 distinct UPI
+        err_group = nuniq_per_group[nuniq_per_group > 1]
+        if not err_group.empty:
+            conflict_rows = (
+                _tmp_valid
+                .set_index(['Subject_norm', 'Date Calc_norm'])
+                .loc[err_group.index]
+                .reset_index()
             )
-        conflict_lines = "\n".join([f"- {item}" for item in conflict_summary])
-        st.error(
-            "Each Subject and Date pair must map to exactly one UPI.\n\n"
-            "Conflicts found:\n"
-            f"{conflict_lines}\n\n"
-            "Please check and update."
-        )
-        st.session_state['errors'] = True
+            conflict_summary = []
+            for (subject, date_calc), grp in conflict_rows.groupby(['Subject_norm', 'Date Calc_norm']):
+                upis = sorted(grp['UPI_norm'].dropna().astype('Int64').astype('string').unique().tolist())
+                conflict_summary.append(
+                    f"Subject {subject} on {_format_date_human(date_calc)} listed with UPI {', '.join(upis)}"
+                )
+            conflict_lines = "\n".join([f"- {item}" for item in conflict_summary])
+            st.error(
+                "Each Subject and Date pair must map to exactly one UPI.\n\n"
+                "Conflicts found:\n"
+                f"{conflict_lines}\n\n"
+                "Please check and update."
+            )
+            st.session_state['errors'] = True
     
     # store the corrected dataframe for Step 3
     st.session_state['edited_df'] = edited_df
