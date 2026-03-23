@@ -41,8 +41,25 @@ def normalize_id(value):
         return value_str
 
 
-def split_patient_id_columns(patient_id_series):
+def split_patient_id_columns(patient_id_series, location='UCSF'):
     patient_id = patient_id_series.astype('string').str.strip()
+    if location == 'Uganda':
+        split_pid = patient_id.str.split('.', n=1, expand=True)
+        if split_pid.shape[1] < 2:
+            split_pid[1] = pd.NA
+
+        has_dot = patient_id.str.contains(r'\.', regex=True, na=False)
+        integer_sample = patient_id.map(normalize_id).astype('string').str.strip()
+        decimal_sample = split_pid[1].astype('string').str.strip()
+        sample_part = decimal_sample.where(has_dot, integer_sample)
+        invalid_pid_mask = patient_id.isna() | patient_id.eq('') | sample_part.isna() | sample_part.eq('')
+        # Uganda accepts either a simple integer Patient ID or a decimal-style
+        # value; when a decimal is present, the sample number is the part after
+        # the dot.
+        subject_part = sample_part.mask(invalid_pid_mask, pd.NA)
+        sample_part = sample_part.mask(invalid_pid_mask, pd.NA)
+        return subject_part, sample_part, invalid_pid_mask
+
     split_pid = patient_id.str.split('.', n=1, expand=True)
     if split_pid.shape[1] < 2:
         split_pid[1] = pd.NA
@@ -87,7 +104,7 @@ def extract_serial_number(filename):
     except Exception as e:
         raise ValueError(f"Error extracting serial number from {filename}: {str(e)}")
     
-def feinerize(datafr, serial_number):
+def feinerize(datafr, serial_number, location='UCSF'):
     #separate timestamp into two columns
     print('feinerizing')
     datafr['Time'] = pd.to_datetime(datafr['Time'])
@@ -97,7 +114,10 @@ def feinerize(datafr, serial_number):
     datafr['Time Calc'] =  datafr['Time'].dt.time
 
     #separate patient ID into two columns
-    subject_part, sample_part, invalid_pid_mask = split_patient_id_columns(datafr['Patient ID'])
+    subject_part, sample_part, invalid_pid_mask = split_patient_id_columns(
+        datafr['Patient ID'],
+        location=location,
+    )
     if invalid_pid_mask.any():
         bad_rows = datafr.loc[invalid_pid_mask, ['Time', 'Patient ID']].copy()
         bad_rows['Time'] = bad_rows['Time'].astype('string')
@@ -106,9 +126,10 @@ def feinerize(datafr, serial_number):
             [f"Time {row['Time']} with Patient ID '{row['Patient ID']}'"
              for _, row in bad_rows.iterrows()]
         )
+        expected_format = "a simple integer like '21' or a decimal like '3.21'" if location == 'Uganda' else "format like '3.21'"
         st.warning(
             'Some Patient ID values could not be split into "Subject" and "Sample". '
-            f"Problem rows: {problem_rows}. Expected format like '3.21'. "
+            f"Problem rows: {problem_rows}. Expected {expected_format}. "
             'Those rows will stay editable in Step 2 so you can correct them.'
         )
 
@@ -193,7 +214,7 @@ if st.session_state['uploaded']==True:
                 st.info(f"File: {file.name} → Machine Serial: {serial_number}")
                 
                 df = pd.read_csv(file, encoding = 'cp1252', converters={'Patient ID': str})
-                df = feinerize(df, serial_number)
+                df = feinerize(df, serial_number, location=location)
                 dfs.append(df)
             df1 = pd.concat(dfs, ignore_index=True)
             # df1 = feinerize(df1)
@@ -217,7 +238,10 @@ if 'combined' in st.session_state:
     edited_df = st.data_editor(st.session_state['df1'].sort_values(by='Time Stamp'), num_rows='dynamic', key='data_editor')
     # Rebuild Subject and Sample from the edited Patient ID values so users can
     # fix bad IDs here instead of being blocked earlier in the upload flow.
-    edited_df['Subject'], edited_df['Sample'], invalid_pid_mask = split_patient_id_columns(edited_df['Patient ID'])
+    edited_df['Subject'], edited_df['Sample'], invalid_pid_mask = split_patient_id_columns(
+        edited_df['Patient ID'],
+        location=location,
+    )
     #count the number of null values in Subject, sample, patient id, and UPI columns
     df1= edited_df
     st.session_state['errors'] = False
@@ -230,8 +254,9 @@ if 'combined' in st.session_state:
         st.write('Sample column has null values: ', edited_df.loc[sample_null_mask, 'Time Stamp'].tolist())
         st.session_state['errors'] = True
     if invalid_pid_mask.any():
+        expected_format = "a simple integer like '21' or a decimal like '3.21'" if location == 'Uganda' else "'3.21'"
         st.write(
-            "Patient ID is missing or not in the right format ('3.21'). Please fix Patient ID in these rows. Subject and Sample are filled automatically from Patient ID: ",
+            f"Patient ID is missing or not in the right format ({expected_format}). Please fix Patient ID in these rows. Subject and Sample are filled automatically from Patient ID: ",
             edited_df.loc[invalid_pid_mask, 'Time Stamp'].tolist()
         )
         st.session_state['errors'] = True
