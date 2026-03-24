@@ -3,3 +3,5 @@
 *.xlsx
 *.ipynb
 .streamlit
+.DS_Store
+__pycache__/
