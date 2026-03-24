@@ -450,6 +450,7 @@ elif st.session_state[state_key("errors")] is False:
                 "machine_serial",
             ]
         ]
+        finaldf.rename_axis("record_id", inplace=True)
         st.session_state[state_key("finaldf")] = finaldf
 
 # Step 4: show the final payload, then upload or download it.
